@@ -139,12 +139,10 @@ function createInspirationalContent(): HTMLElement {
   const container = document.createElement("div");
   container.className = "adfriend-inspiration";
 
-  // Randomly select content type
   const contentTypes: ContentType[] = ["quote", "fact", "reminder"];
   const randomType =
     contentTypes[Math.floor(Math.random() * contentTypes.length)];
 
-  // Style based on content type
   const gradients = {
     quote: "linear-gradient(135deg, #4f46e5, #818cf8)",
     fact: "linear-gradient(135deg, #059669, #34d399)",
