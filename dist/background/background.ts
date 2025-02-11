@@ -1,130 +1,83 @@
-import { adPatterns } from '../utils/adPatterns';
-import type { Message, ContentType } from '../types';
-import type { RuleActionType, ResourceType } from '../types';
+// Initialize storage and rules
+chrome.runtime.onInstalled.addListener(async () => {
+  // Initialize chrome.storage
+  await chrome.storage.sync.set({ 
+    blockedCount: 0, 
+    transformedCount: 0,
+    blockingHistory: Array(7).fill(0)
+  });
+  await chrome.storage.local.set({ blockedAds: [] });
 
-type DynamicRule = chrome.declarativeNetRequest.Rule;
-
-const contentTypes: ContentType[] = ['quote', 'fact', 'reminder'];
-
-// Initialize and manage dynamic rules
-async function initializeRules() {
-  try {
-    // Get existing rules to remove them
-    const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
-    const existingRuleIds = existingRules.map(rule => rule.id);
-
-    // Create new rules from patterns
-    const newRules: DynamicRule[] = adPatterns.map((pattern, index) => ({
-      id: 1000 + index,
-      priority: 1,
-      action: { type: 'block' as RuleActionType },
-      condition: {
-        urlFilter: pattern,
-        resourceTypes: ['script', 'image', 'xmlhttprequest', 'sub_frame', 'main_frame'] as ResourceType[]
-      }
-    }));
-
-    // Update rules
-    await chrome.declarativeNetRequest.updateDynamicRules({
-      removeRuleIds: existingRuleIds,
-      addRules: newRules
-    });
-
-    console.debug(`[AdFriend] Successfully initialized ${newRules.length} blocking rules`);
-  } catch (error) {
-    console.error('[AdFriend] Error initializing rules:', error);
-  }
-}
-
-// Initialize rules when extension loads
-initializeRules();
-
-// Listen for content script initialization and blocked requests
-chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) => {
-  try {
-    if (message.type === 'CONTENT_SCRIPT_READY') {
-      // Select a random content type for the replacement
-      const randomType = contentTypes[Math.floor(Math.random() * contentTypes.length)];
-      sendResponse({ 
-        type: 'BACKGROUND_READY',
-        payload: {
-          contentType: randomType
-        }
-      });
-
-      // Initialize analytics storage
-      chrome.storage.local.get('blockedAds', (data) => {
-        if (!data.blockedAds) {
-          chrome.storage.local.set({ blockedAds: [] });
-        }
-      });
-    }
-    return true; // Keep the message channel open for async response
-  } catch (error) {
-    console.error('[AdFriend] Error processing message:', error);
-    sendResponse({ type: 'ERROR', payload: { error: 'Internal error occurred' } });
-    return false;
-  }
-});
-
-// Initialize counters in storage
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.sync.get(['blockedCount', 'transformedCount'], (result) => {
-    if (typeof result.blockedCount === 'undefined') {
-      chrome.storage.sync.set({ blockedCount: 0 });
-    }
-    if (typeof result.transformedCount === 'undefined') {
-      chrome.storage.sync.set({ transformedCount: 0 });
-    }
+  // Set extension action options
+  await chrome.declarativeNetRequest.setExtensionActionOptions({
+    displayActionCountAsBadgeText: true
   });
 });
 
-// Monitor blocked requests for analytics using recommended API
+// Single listener for blocked requests
 chrome.declarativeNetRequest.onRuleMatchedDebug?.addListener(
   ({ request, rule }) => {
-    try {
-      console.debug(`[AdFriend] Blocked ad request to: ${request.url}`);
-      console.debug(`[AdFriend] Matched rule: ${rule.ruleId}`);
+    // Ignore main frame blocks to avoid counting page loads
+    if (request.type === 'main_frame') return;
 
-      // Increment blocked count
-      chrome.storage.sync.get(['blockedCount'], (result) => {
-        const newCount = (result.blockedCount || 0) + 1;
-        chrome.storage.sync.set({ blockedCount: newCount }, () => {
-          // Notify popup to update display
+    console.debug(`[AdFriend] Blocked ad request to: ${request.url}`);
+    console.debug(`[AdFriend] Matched rule: ${rule.ruleId}`);
+
+    // Use chrome.storage for storing counts
+    chrome.storage.sync.get(['blockedCount', 'transformedCount', 'blockingHistory'], (result) => {
+      const currentCount = result.blockedCount || 0;
+      const newBlockedCount = currentCount + 1;
+      
+      // Update blocking history
+      const history = result.blockingHistory || Array(7).fill(0);
+      history[6] = newBlockedCount; // Update today's count
+      
+      chrome.storage.sync.set({ 
+        blockedCount: newBlockedCount,
+        blockingHistory: history
+      }, () => {
+        if (chrome.runtime.lastError) {
+          console.error('[AdFriend] Error updating blocked count:', chrome.runtime.lastError);
+          return;
+        }
+        // Notify popup to update display only after storage is updated
+        try {
           chrome.runtime.sendMessage({
             type: 'updateCounts',
-            blockedCount: newCount
+            blockedCount: newBlockedCount,
+            transformedCount: result.transformedCount || 0
           });
-        });
-      });
+        } catch (messageError) {
+          console.debug('[AdFriend] Popup not ready for message');
+        }
 
-      // Store analytics data
-      chrome.storage.local.set({
-        [`blocked_${Date.now()}`]: {
+        // Store analytics data
+        const analyticsData = {
           url: request.url,
           ruleId: rule.ruleId,
-          timestamp: new Date().toISOString()
-        }
-      }).catch(console.error);
-    } catch (error) {
-      console.error('[AdFriend] Error processing blocked request:', error);
-    }
-  }
-);
+          timestamp: new Date().toISOString(),
+          type: 'blocked',
+          details: {
+            initiator: request.initiator || 'unknown',
+            frameId: request.frameId,
+            resourceType: request.type || 'unknown',
+            isAdResource: true
+          }
+        };
 
-// Listen for ad space transformations
-chrome.runtime.onMessage.addListener((message: Message) => {
-  if (message.type === 'AD_TRANSFORMED') {
-    chrome.storage.sync.get(['transformedCount'], (result) => {
-      const newCount = (result.transformedCount || 0) + 1;
-      chrome.storage.sync.set({ transformedCount: newCount }, () => {
-        // Notify popup to update display
-        chrome.runtime.sendMessage({
-          type: 'updateCounts',
-          transformedCount: newCount
+        // Use callback-based storage for analytics
+        chrome.storage.local.get('blockedAds', (data) => {
+          const blockedAds = data.blockedAds || [];
+          blockedAds.push(analyticsData);
+          
+          // Keep only the last 1000 entries
+          if (blockedAds.length > 1000) {
+            blockedAds.shift();
+          }
+
+          chrome.storage.local.set({ blockedAds });
         });
       });
     });
   }
-  return true; // Keep the message channel open for async operations
-});
+);
