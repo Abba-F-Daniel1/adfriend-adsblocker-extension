@@ -155,7 +155,39 @@ document.addEventListener("DOMContentLoaded", () => {
   // Toggle button click handler
   toggleButton.addEventListener("click", async () => {
     const isCurrentlyEnabled = toggleButton.classList.contains("enabled");
-    await toggleExtension(!isCurrentlyEnabled);
+    const newState = !isCurrentlyEnabled;
+
+    try {
+      // Update storage state
+      await chrome.storage.sync.set({ enabled: newState });
+
+      // Update UI
+      updateUIState(newState);
+
+      // Send message to all tabs to update content immediately
+      const tabs = await chrome.tabs.query({ active: true });
+      tabs.forEach((tab) => {
+        if (tab.id) {
+          chrome.tabs.sendMessage(tab.id, {
+            type: newState ? "ENABLE_ADFRIEND" : "DISABLE_ADFRIEND",
+          });
+        }
+      });
+
+      // Update badge
+      if (!newState) {
+        chrome.action.setBadgeText({ text: "OFF" });
+        chrome.action.setBadgeBackgroundColor({ color: "#6b7280" });
+      } else {
+        const { blockedCount = 0 } = await chrome.storage.sync.get(
+          "blockedCount"
+        );
+        chrome.action.setBadgeText({ text: blockedCount.toString() });
+        chrome.action.setBadgeBackgroundColor({ color: "#22c55e" });
+      }
+    } catch (error) {
+      console.error("Error toggling extension:", error);
+    }
   });
 
   // Dark mode toggle
