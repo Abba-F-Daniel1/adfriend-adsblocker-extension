@@ -22,8 +22,6 @@ AdFriend is a unique Chrome extension that transforms ad spaces into positive, i
 5. Click "Load Unpacked" and select the folder where you extracted the ZIP file
 6. The extension is now installed and ready to use!
 
-## Development
-
 ### Prerequisites
 
 - Node.js (v14 or higher)
